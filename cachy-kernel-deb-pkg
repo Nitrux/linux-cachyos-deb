@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+
+#############################################################################################################################################################################
+#   The license used for this file and its contents is: BSD-3-Clause                                                                                                        #
+#                                                                                                                                                                           #
+#   Copyright <2024-2025> <Uri Herrera <uri_herrera@nxos.org>>                                                                                                              #
+#                                                                                                                                                                           #
+#   Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:                          #
+#                                                                                                                                                                           #
+#    1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.                                        #
+#                                                                                                                                                                           #
+#    2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer                                      #
+#       in the documentation and/or other materials provided with the distribution.                                                                                         #
+#                                                                                                                                                                           #
+#    3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software                    #
+#       without specific prior written permission.                                                                                                                          #
+#                                                                                                                                                                           #
+#    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,                      #
+#    THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS                  #
+#    BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE                 #
+#    GOODS OR SERVICES; LOSS OF USE, DATA,   OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,                      #
+#    STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.   #
+#############################################################################################################################################################################
+
+
+# -- Exit on errors.
+
+set -eu
+
+
+# -- Variables to set default options.
+
+_kv_name="$1"
+
+
+# -- Generate Debian packages.
+
+custom_package_build() {
+    modules_build_dir=$(mktemp -d)
+    make INSTALL_MOD_STRIP=1 modules_install INSTALL_MOD_PATH="$modules_build_dir"
+    find "$modules_build_dir" -type f -name '*.ko' -exec zstd -19 -f {} \;
+
+    local kernel_version arch kernel_pkg_name kernel_pkg_version kernel_pkg_dir
+    kernel_version=$(make kernelversion)
+    arch=$(dpkg --print-architecture)
+    kernel_pkg_name="linux-image-cachyos-${kernel_version}"
+    kernel_pkg_version=$(date +%Y.%m.%d-%H.%M)
+    kernel_pkg_dir="${kernel_pkg_name}-${kernel_pkg_version}_${arch}"
+
+    package_kernel() {
+        local control_file="${kernel_pkg_dir}/DEBIAN/control"
+        local kernel_postinst_file="${kernel_pkg_dir}/DEBIAN/postinst"
+        local kernel_postrm_file="${kernel_pkg_dir}/DEBIAN/postrm"
+
+        mkdir -p "${kernel_pkg_dir}/DEBIAN" \
+                 "${kernel_pkg_dir}/boot" \
+                 "${kernel_pkg_dir}/usr/lib/modules/${kernel_version}" \
+                 "${kernel_pkg_dir}/usr/share/doc/${kernel_pkg_name}"
+
+        cat >"${control_file}" <<EOF
+Package: ${kernel_pkg_name}
+Version: ${kernel_pkg_version}
+Section: kernel
+Priority: optional
+Depends: initramfs-tools, libc6, kmod, linux-base
+Architecture: ${arch}
+Maintainer: Nitrux Latinoamericana S.C. <hello@nxos.org>
+Description: Linux Kernel ${kernel_version} with CachyOS patches
+EOF
+
+        cat >"${kernel_postinst_file}" <<EOF
+#!/usr/bin/env bash
+update-initramfs -c -k ${kernel_version}
+update-grub
+EOF
+
+        cat >"${kernel_postrm_file}" <<EOF
+#!/usr/bin/env bash
+find /boot -name "initrd.img-${kernel_version}" -exec rm -f {} \;
+update-grub
+EOF
+
+        chmod 755 "${kernel_postinst_file}" "${kernel_postrm_file}"
+
+        cp arch/x86/boot/bzImage "${kernel_pkg_dir}/boot/vmlinuz-${kernel_version}"
+        cp -a "${modules_build_dir}/lib/modules/${kernel_version}/." \
+              "${kernel_pkg_dir}/usr/lib/modules/${kernel_version}/"
+
+        cp System.map "${kernel_pkg_dir}/boot/System.map-${kernel_version}"
+        cp .config "${kernel_pkg_dir}/boot/config-${kernel_version}"
+
+        fakeroot dpkg-deb -Zxz --build --root-owner-group "${kernel_pkg_dir}"
+        mv -- *.deb ../
+
+        rm -rf "${kernel_pkg_dir}" "$modules_build_dir"
+    }
+
+    local headers_pkg_name headers_pkg_version headers_pkg_dir
+    headers_pkg_name="linux-headers-cachyos-${kernel_version}"
+    headers_pkg_version="${kernel_pkg_version}"
+    headers_pkg_dir="${headers_pkg_name}-${headers_pkg_version}_${arch}"
+
+    package_headers() {
+        local control_file="${headers_pkg_dir}/DEBIAN/control"
+        local headers_postinst_file="${headers_pkg_dir}/DEBIAN/postinst"
+        local headers_postrm_file="${headers_pkg_dir}/DEBIAN/postrm"
+
+        mkdir -p "${headers_pkg_dir}/DEBIAN" \
+                 "${headers_pkg_dir}/usr/src/linux-headers-${kernel_version}"
+
+        cat >"${control_file}" <<EOF
+Package: ${headers_pkg_name}
+Version: ${headers_pkg_version}
+Section: kernel
+Priority: optional
+Depends: ${kernel_pkg_name}
+Architecture: ${arch}
+Maintainer: Nitrux Latinoamericana S.C. <hello@nxos.org>
+Description: Headers for Linux Kernel ${kernel_version} with CachyOS patches
+EOF
+
+        cat >"${headers_postinst_file}" <<EOF
+#!/usr/bin/env bash
+ln -svf /usr/src/linux-headers-${kernel_version} /usr/lib/modules/${kernel_version}/build
+EOF
+
+        cat >"${headers_postrm_file}" <<EOF
+#!/usr/bin/env bash
+rm -f /usr/lib/modules/${kernel_version}/build
+EOF
+
+        chmod 755 "${headers_postinst_file}" "${headers_postrm_file}"
+
+        make headers_install \
+             INSTALL_HDR_PATH="${headers_pkg_dir}/usr/src/linux-headers-${kernel_version}"
+
+        cp -a Module.symvers Makefile Kconfig \
+              "${headers_pkg_dir}/usr/src/linux-headers-${kernel_version}/"
+
+        directories=(
+          arch block certs crypto drivers fs include init io_uring ipc kernel
+          lib mm net rust samples scripts security sound tools usr virt
+        )
+        for dir in "${directories[@]}"; do
+            target_dir="${headers_pkg_dir}/usr/src/linux-headers-${kernel_version}/${dir}"
+            mkdir -p "$target_dir"
+            cp -a "${dir}/." "$target_dir/"
+        done
+
+        cd - >/dev/null
+        cd "$_kv_name" || { echo "Failed to enter the kernel directory."; exit 1; }
+        echo "Generating vmlinux.h..."
+        bpftool btf dump file vmlinux format c > vmlinux.h
+        mv vmlinux.h "${headers_pkg_dir}/usr/src/linux-headers-${kernel_version}/vmlinux.h"
+
+        fakeroot dpkg-deb -Zxz --build --root-owner-group "${headers_pkg_dir}"
+        mv -- *.deb ../
+        rm -rf "${headers_pkg_dir}"
+    }
+
+    package_kernel
+    package_headers
+
+    echo "Packages successfully built."
+}
+
+custom_package_build

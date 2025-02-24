@@ -888,7 +888,7 @@ create_debian_packages() {
 
     echo "Creating Debian packages..."
 
-    KDEB_NO_SOURCE_PACKAGE=1 NO_SOURCE=1 make -j"$(nproc)" bindeb-pkg
+    "${BASH_SOURCE%/*}/cachy-kernel-deb-pkg" "$_kv_name"
 
     echo "Packages succesfully built."
 
