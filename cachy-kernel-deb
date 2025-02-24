@@ -906,10 +906,6 @@ create_debian_packages() {
     echo "Packages successfully built."
 
     cd -
-
-    #############################
-    #   BUILD DEBIAN PACKAGES   #
-    #############################
 }
 
 #   ====== START ======
