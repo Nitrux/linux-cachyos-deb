@@ -886,13 +886,30 @@ create_debian_packages() {
 
     # -- End of ugly "hack."
 
+    #############################
+    #   BUILD DEBIAN PACKAGES   #
+    #############################
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    echo "Resolved script path: $SCRIPT_DIR/cachy-kernel-deb-pkg"
+
+    if [[ ! -f "$SCRIPT_DIR/cachy-kernel-deb-pkg" ]]; then
+        echo "Error: cachy-kernel-deb-pkg not found at $SCRIPT_DIR"
+        exit 1
+    fi
+
     echo "Creating Debian packages..."
+    
+    "$SCRIPT_DIR/cachy-kernel-deb-pkg" "$_kv_name"
 
-    "${BASH_SOURCE%/*}/cachy-kernel-deb-pkg" "$_kv_name"
-
-    echo "Packages succesfully built."
+    echo "Packages successfully built."
 
     cd -
+
+    #############################
+    #   BUILD DEBIAN PACKAGES   #
+    #############################
 }
 
 #   ====== START ======
